@@ -1,0 +1,191 @@
+substitutions:
+  esp_name: DaddyboardLA 
+  esp_hostname: daddyboard-la 
+  font_glyphs: |-
+      !"%()+=,-_.:°0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyzæøå
+
+esphome:
+  name: ${esp_hostname}
+  platform: ESP32
+  board: esp32dev
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password 
+
+captive_portal:
+
+ota: 
+  password: !secret ota_password
+
+# Enable logging
+logger:
+
+time:
+  - platform: homeassistant
+    id: ntp
+
+# Enable Home Assistant API
+api:
+
+spi:
+  clk_pin: 18
+  mosi_pin: 23
+
+font:
+  - file: "fonts/Roboto-Light.ttf"
+    id: font_name
+    size: 80
+    glyphs: ${font_glyphs}
+  - file: "fonts/Roboto-Light.ttf"
+    id: font_value
+    size: 128 
+    glyphs: ${font_glyphs}
+  - file: "fonts/Roboto-Medium.ttf"
+    id: font_small
+    size: 48
+    glyphs: ${font_glyphs}
+  - file: "fonts/materialdesignicons-webfont.ttf"
+    id: font_icons
+    size: 280 
+    glyphs:
+      - "\U000F0513" # Available
+      - "\U000F009B" # Quiet Please
+      - "\U000F0159" # Do Not Disturb
+      - "\U000F017C" # Comment 
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/vbaksa/esphome
+      ref: dev
+    components: [lilygo_t5_47_display, lilygo_t5_47_battery]
+    refresh: 50days
+
+button:
+  - platform: restart
+    name: "${esp_name} Restart"
+  - platform: template
+    name: "${esp_name} Refresh"
+    icon: "mdi:update"
+    on_press:
+      then:
+        - script.execute: all_data_received
+
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: GPIO39
+      inverted: true
+    name: "${esp_name} Button 1"
+    on_press:
+      then:
+        - component.update: t5_display
+
+sensor:
+  - platform: lilygo_t5_47_battery
+    id: batt_volt
+    update_interval: never
+    voltage:
+      name: "${esp_name} Battery Voltage"
+  - platform: template
+    name: "${esp_name} Battery"
+    id: batt
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    device_class: battery
+    lambda: |-
+      int y = (1-(4.1-id(batt_volt).voltage->state)/(4.1-3.3))*100;
+      if (y < 100) {return y;} else {return 100;};
+    update_interval: never
+
+text_sensor:
+  - platform: homeassistant
+    entity_id: input_select.daddy_state 
+    id: daddy_state 
+    internal: true
+    on_value:
+      then:
+        - script.execute: all_data_received
+  - platform: homeassistant
+    entity_id: input_text.daddy_state_custom 
+    id: daddy_state_custom 
+    internal: true
+
+script:
+  - id: refresh_display
+    then:
+      - repeat:
+          count: 1
+          then:
+            - display.page.show: black
+            - component.update: t5_display
+            - component.update: t5_display
+
+  - id: all_data_received
+    then:
+      - component.update: batt_volt
+      - component.update: batt
+      - display.page.show: mainpage
+      - component.update: t5_display
+
+display:
+  - platform: lilygo_t5_47_display
+    power_off_delay_enabled: true
+    clear: false
+    id: t5_display
+    update_interval: 5s
+    pages:
+      - id: black
+        lambda: |-
+         #define xres 960 
+         #define yres 540
+
+         // draw filled background
+         it.filled_rectangle(0, 0, xres, yres, COLOR_ON);
+         it.print(xres/2, yres/2, id(font_name), COLOR_OFF, TextAlign::CENTER, "Refreshing...");
+
+      - id: mainpage
+        lambda: |-
+            #define xres 960 
+            #define yres 540
+            #define y_pad 10
+            #define val_pad 35
+            #define x1v 100
+            
+            // draw clear background (forces whole display to redraw)
+            it.filled_rectangle(0, 0, xres, yres, COLOR_ON);
+            it.filled_rectangle(1, 1, xres-1, yres-1, COLOR_OFF);
+            
+            auto get_daddy_state_glyph = [](std::string daddy_state) {
+                std::map<std::string, std::string> glyphs;
+                
+                glyphs["Available"] = "\U000F0513";
+                glyphs["Quiet Please"] = "\U000F009B";
+                glyphs["Do Not Disturb"] = "\U000F0159";
+                glyphs["Custom"] = "\U000F017C";
+                
+                return glyphs.at(daddy_state);
+            };
+
+            auto get_daddy_state = [](std::string daddy_state) {
+                if (daddy_state == "Custom") {
+                  return id(daddy_state_custom).state;
+                }
+                return daddy_state;
+            };
+
+            // Date
+            it.strftime(5, 2, id(font_small), "%b %d, %Y", id(ntp).now());
+            
+            // Daddy State
+            if(id(daddy_state).has_state()) {
+                std::string condition = id(daddy_state).state;
+                auto glyph = get_daddy_state_glyph(condition);
+
+                it.printf(xres/2, 180, id(font_icons), TextAlign::CENTER, glyph.c_str());
+                it.printf(xres/2, 400, id(font_value), TextAlign::CENTER, get_daddy_state(condition).c_str()); 
+            }
+    
+            // Battery
+            it.printf(xres, 2, id(font_small), TextAlign::TOP_RIGHT, "%.0f %%", id(batt).state);
